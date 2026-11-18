@@ -94,6 +94,7 @@ function spawnUnit(state, city, rng, kind) {
     if (kind === 'foot') {
       state.police.push({ id, x: n.x, z: n.z, yaw: 0, kind: 'foot', bustTimer: 0, carId: null, health: 100, attackTimer: 0 });
     } else {
+      // The cruiser takes the next id after the unit, so the two never collide.
       const car = createCar(nextPoliceId, n.x, n.z, 0, '#f2f2f2', 'police');
       nextPoliceId += 1;
       car.driver = 'police';

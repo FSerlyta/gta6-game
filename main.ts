@@ -10,6 +10,8 @@
 // minimap, a start screen and a save — all with synthesized sound.
 //
 // Serve it locally with `node serve.ts`, then open http://localhost:8080.
+// The cover screenshot is staged by game/src/shots.js: the chase plays forward
+// for real, then the two cruisers are pulled into formation so both read in frame.
 // Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
 

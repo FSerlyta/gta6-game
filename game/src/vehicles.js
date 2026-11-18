@@ -112,7 +112,8 @@ export function carForward(car) {
 function carAhead(state, car, distance) {
   const f = carForward(car);
   for (const other of state.cars) {
-    if (other === car || other.speed === 0 && other.driver === null) continue;
+    // A stopped car with no driver is parked: it is not traffic to follow.
+    if (other === car || (other.speed === 0 && other.driver === null)) continue;
     const dx = other.x - car.x;
     const dz = other.z - car.z;
     const along = dx * f.x + dz * f.z;

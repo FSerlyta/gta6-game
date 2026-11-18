@@ -35,8 +35,13 @@ function chaseCamera(game, dist, height) {
   };
 }
 
-/** The cover: Dario fleeing down Bay Street in a stolen Comet, two cruisers on
- * his bumper, three stars on the HUD and the mission line up top. */
+/**
+ * The cover: Dario fleeing down Bay Street in a stolen Comet, two cruisers on
+ * his bumper, three stars on the HUD and the mission line up top. The chase is
+ * played forward for real, then the cruisers are pulled into a tight staggered
+ * formation behind the Comet — close enough that the camera, set low on the road
+ * behind the rearmost cruiser, holds all three cars in one frame.
+ */
 function stageCover(game) {
   const { state, city } = game;
   const roadX = city.roadsX[4];
@@ -55,15 +60,15 @@ function stageCover(game) {
   state.objective = 'Lose the cops — stay out of sight';
   // Clear traffic off the chase road so the Comet never has to stop.
   state.cars = state.cars.filter((c) => !(c.kind === 'traffic' && Math.abs(c.z - roadZ) < 9 && c.x > roadX - 60 && c.x < roadX + 260));
-  // Two cruisers right behind him.
+  // Two cruisers starting on the road behind him, one a lane either side.
   for (let i = 0; i < 2; i += 1) {
-    const copCar = createCar(9501 + i, roadX + (i === 0 ? 2.5 : -2.5), roadZ + 16 + i * 8, -Math.PI / 2, '#f2f2f2', 'police');
+    const copCar = createCar(9501 + i, roadX - 14 - i * 12, roadZ + (i === 0 ? -2.5 : 2.5), -Math.PI / 2, '#f2f2f2', 'police');
     copCar.driver = 'police';
-    copCar.speed = 30;
+    copCar.speed = 34;
     state.cars.push(copCar);
     state.police.push({ id: 9501 + i, x: copCar.x, z: copCar.z, yaw: copCar.yaw, kind: 'car', bustTimer: 0, carId: copCar.id, health: 100, attackTimer: 0 });
   }
-  playFor(game, 3.5, () => ({ keys: new Set(['KeyW']), mouse: false }));
+  playFor(game, 2.5, () => ({ keys: new Set(['KeyW']), mouse: false }));
   // A bust mid-staging would ruin the shot: the cover is a chase, not an arrest.
   if (state.over) {
     state.over = null;
@@ -72,19 +77,49 @@ function stageCover(game) {
     state.dialogueTimer = 0;
     for (const unit of state.police) unit.bustTimer = 0;
   }
-  // Side-rear camera behind the cruisers: both police cars in the foreground,
-  // the red Comet fleeing ahead of them.
-  const carNow = state.cars.find((c) => c.id === 9500);
-  const cx = carNow ? carNow.x : car.x;
-  const cz = carNow ? carNow.z : car.z;
-  game.state.cameraOverride = {
-    x: cx - 30,
-    y: 7,
-    z: cz + 10,
-    lookX: cx + 10,
-    lookY: 1.5,
-    lookZ: cz + 2,
-  };
+  // Pull the cruisers into formation behind the Comet so both read in frame:
+  // one 11 m back in the north lane, one 20 m back in the south lane, matching
+  // the Comet's heading and speed. The chase was real; this is just the photo.
+  const comet = state.cars.find((c) => c.id === 9500);
+  if (comet) {
+    const fx = -Math.sin(comet.yaw);
+    const fz = -Math.cos(comet.yaw);
+    const rx = -fz;
+    const rz = fx;
+    const cruisers = state.police.filter((u) => u.kind === 'car');
+    const gaps = [11, 20];
+    const lanes = [-2.5, 2.5];
+    cruisers.forEach((unit, i) => {
+      const copCar = state.cars.find((c) => c.id === unit.carId);
+      if (!copCar) return;
+      const gap = gaps[i % gaps.length];
+      const lane = lanes[i % lanes.length];
+      copCar.x = comet.x - fx * gap + rx * lane;
+      copCar.z = comet.z - fz * gap + rz * lane;
+      copCar.yaw = comet.yaw;
+      copCar.speed = comet.speed;
+      unit.x = copCar.x;
+      unit.z = copCar.z;
+      unit.yaw = copCar.yaw;
+      unit.bustTimer = 0;
+    });
+    // Camera low on the road behind the rearmost cruiser, looking past both
+    // cruisers at the fleeing Comet. The road itself is clear of buildings, so
+    // the frame holds the whole chase train: cruiser, cruiser, Comet.
+    const rear = cruisers
+      .map((u) => state.cars.find((c) => c.id === u.carId))
+      .filter(Boolean)
+      .sort((a, b) => (a.x * fx + a.z * fz) - (b.x * fx + b.z * fz))[0];
+    const camBase = rear ?? comet;
+    game.state.cameraOverride = {
+      x: camBase.x - fx * 13 + rx * 6,
+      y: 8.5,
+      z: camBase.z - fz * 13 + rz * 6,
+      lookX: comet.x + fx * 9,
+      lookY: 1.5,
+      lookZ: comet.z + fz * 9,
+    };
+  }
 }
 
 /** On foot at a busy intersection: traffic rolling past, residents on the

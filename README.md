@@ -28,7 +28,7 @@ Desktop Chrome, keyboard + mouse. No network requests — every file the game lo
 
 - three.js 0.187.0, vendored as `game/vendor/three.min.js`
 - ES modules, one job per file under `game/src/`, fixed 1/60 s simulation separate from rendering, one state store
-- Screenshots are real renders of the game, staged by `game/src/shots.js` via `?shot=cover|streets|mission|vista`
+- Screenshots are real renders of the game, staged by `game/src/shots.js` via `?shot=cover|streets|mission|vista`; the cover is framed so both pursuing cruisers read in the shot, not just one
 
 ## License
 
