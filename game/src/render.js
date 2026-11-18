@@ -1,141 +1,176 @@
-// Drawing only: the world's state and the current screen in, pixels out. The 1280x720 playfield
-// is scaled to fit the window and centred, the margin filled with the backdrop colour. Flat
-// rectangles and circles, canvas text for the HUD and the panels. Text that holds a number is
-// rebuilt only when the number changes, so a frame allocates nothing.
-import { FIELD, FONT, LIVES, PALETTE } from './config.js';
-import { KIND_COIN } from './world.js';
+// Drawing only: the city, the actors and the camera, from the state store. The
+// renderer owns the THREE scene, the sun and the mesh registry; the simulation
+// never touches a mesh.
+import * as THREE from 'three';
+import { CONFIG } from './config.js';
+import { buildCityMeshes } from './world.js';
+import { buildCarMesh } from './vehicles.js';
+import { buildPlayerMesh } from './player.js';
+import { buildPedMesh } from './pedestrians.js';
+import { buildCopMesh, buildPoliceCarMesh } from './police.js';
 
-export const SCREEN_TITLE = 'title';
-export const SCREEN_PLAY = 'play';
-export const SCREEN_PAUSED = 'paused';
-export const SCREEN_OVER = 'over';
+export function createRenderer(canvas, city) {
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFShadowMap;
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
 
-/** The panel's width; its height grows with its lines: room for the title, the lines and the prompt. */
-const PANEL = { width: 600, top: 134, line: 34, bottom: 70 };
-const LIFE_SIZE = 20;
-const LIFE_GAP = 8;
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color('#8fc3e8');
+  scene.fog = new THREE.Fog('#a8c8e0', 180, 700);
 
-function cachedLabel(prefix) {
-  let value = -1;
-  let text = '';
-  return function label(next) {
-    if (next !== value) {
-      value = next;
-      text = prefix + next;
-    }
-    return text;
-  };
-}
+  const hemi = new THREE.HemisphereLight('#bcd8ff', '#8a7a5a', 0.9);
+  scene.add(hemi);
+  const sun = new THREE.DirectionalLight('#ffe3b3', 2.4);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(2048, 2048);
+  sun.shadow.camera.left = -170;
+  sun.shadow.camera.right = 170;
+  sun.shadow.camera.top = 170;
+  sun.shadow.camera.bottom = -170;
+  sun.shadow.camera.near = 10;
+  sun.shadow.camera.far = 600;
+  sun.shadow.bias = -0.0004;
+  scene.add(sun);
+  scene.add(sun.target);
 
-export function createRenderer(canvas) {
-  const context = canvas.getContext('2d');
-  const view = { scale: 1, x: 0, y: 0 };
-  const scoreLabel = cachedLabel('Score ');
-  const levelLabel = cachedLabel('Level ');
-  const finalLabel = cachedLabel('Score ');
-  const bestLabel = cachedLabel('Best ');
+  scene.add(buildCityMeshes(city));
+
+  const camera = new THREE.PerspectiveCamera(65, 1, 1, 1200);
+  const cameraPos = new THREE.Vector3(0, 20, 40);
+  let snapped = false;
+
+  const playerMesh = buildPlayerMesh();
+  scene.add(playerMesh);
+  const carMeshes = new Map();
+  const pedMeshes = new Map();
+  const copMeshes = new Map();
 
   function resize() {
-    const ratio = window.devicePixelRatio || 1;
-    const width = Math.round(window.innerWidth * ratio);
-    const height = Math.round(window.innerHeight * ratio);
-    canvas.width = width;
-    canvas.height = height;
-    view.scale = Math.min(width / FIELD.width, height / FIELD.height);
-    view.x = (width - FIELD.width * view.scale) / 2;
-    view.y = (height - FIELD.height * view.scale) / 2;
+    const width = window.innerWidth;
+    const height = window.innerHeight;
+    renderer.setSize(width, height, false);
+    camera.aspect = width / height;
+    camera.updateProjectionMatrix();
   }
+  window.addEventListener('resize', resize);
+  resize();
 
-  const fonts = new Map();
-  function text(value, x, y, size, color, align) {
-    if (!fonts.has(size)) fonts.set(size, `${size}px ${FONT}`);
-    context.font = fonts.get(size);
-    context.fillStyle = color;
-    context.textAlign = align;
-    context.fillText(value, x, y);
-  }
+  /** Sync every mesh to the state and paint one frame. */
+  function sync(state, dt) {
+    const p = state.player;
+    // The sun follows the player so shadows stay crisp wherever they go.
+    sun.position.set(p.x + 130, 190, p.z + 70);
+    sun.target.position.set(p.x, 0, p.z);
 
-  function drawField(state) {
-    context.fillStyle = PALETTE.sky;
-    context.fillRect(0, 0, FIELD.width, FIELD.height);
-    context.fillStyle = PALETTE.ground;
-    context.fillRect(0, FIELD.groundY, FIELD.width, FIELD.height - FIELD.groundY);
+    // Dario, bobbing gently as he walks.
+    playerMesh.visible = !p.inCar;
+    if (playerMesh.visible) {
+      const bob = p.speed > 0.5 ? Math.abs(Math.sin(state.time * 11)) * 0.07 : 0;
+      playerMesh.position.set(p.x, p.y + bob, p.z);
+      playerMesh.rotation.y = p.yaw;
+    }
 
-    const items = state.items;
-    for (let index = 0; index < items.length; index += 1) {
-      const item = items[index];
-      if (!item.active) continue;
-      if (item.kind === KIND_COIN) {
-        context.fillStyle = PALETTE.coin;
-        context.beginPath();
-        context.arc(item.x + item.width / 2, item.y + item.height / 2, item.width / 2, 0, Math.PI * 2);
-        context.fill();
-      } else {
-        context.fillStyle = PALETTE.block;
-        context.fillRect(item.x, item.y, item.width, item.height);
+    // Cars: create a mesh on first sight, drop it when the car is gone.
+    const seenCars = new Set();
+    for (const car of state.cars) {
+      seenCars.add(car.id);
+      let mesh = carMeshes.get(car.id);
+      if (!mesh) {
+        mesh = car.kind === 'police' ? buildPoliceCarMesh() : buildCarMesh(car.color, car.kind);
+        carMeshes.set(car.id, mesh);
+        scene.add(mesh);
+      }
+      mesh.position.set(car.x, 0, car.z);
+      mesh.rotation.y = car.yaw;
+      const wheels = mesh.userData.wheels;
+      if (wheels) {
+        for (const wheel of wheels) wheel.rotation.x += (car.speed * dt) / 0.42;
+      }
+      if (mesh.userData.lights) {
+        const on = Math.sin(state.time * 10) > 0;
+        mesh.userData.lights[0].material.emissiveIntensity = on ? 2.5 : 0.2;
+        mesh.userData.lights[1].material.emissiveIntensity = on ? 0.2 : 2.5;
+      }
+    }
+    for (const [id, mesh] of carMeshes) {
+      if (!seenCars.has(id)) {
+        scene.remove(mesh);
+        carMeshes.delete(id);
       }
     }
 
-    const player = state.player;
-    // Blink while invulnerable after a hit: hidden on every other tenth of a second.
-    if (player.invulnerable === 0 || Math.floor(player.invulnerable * 10) % 2 === 1) {
-      context.fillStyle = PALETTE.player;
-      context.fillRect(player.x, player.y, player.width, player.height);
+    // Residents and rivals; the down lie flat on the ground.
+    const seenPeds = new Set();
+    for (const ped of state.peds) {
+      seenPeds.add(ped.id);
+      let mesh = pedMeshes.get(ped.id);
+      if (!mesh) {
+        mesh = buildPedMesh(ped.color);
+        pedMeshes.set(ped.id, mesh);
+        scene.add(mesh);
+      }
+      const bob = ped.state === 'walk' ? Math.abs(Math.sin(state.time * 9 + ped.id)) * 0.05 : 0;
+      mesh.position.set(ped.x, bob, ped.z);
+      mesh.rotation.y = ped.yaw;
+      mesh.rotation.x = ped.state === 'down' ? -Math.PI / 2 : 0;
+      mesh.position.y = ped.state === 'down' ? 0.3 : bob;
     }
+    for (const [id, mesh] of pedMeshes) {
+      if (!seenPeds.has(id)) {
+        scene.remove(mesh);
+        pedMeshes.delete(id);
+      }
+    }
+
+    // Foot officers.
+    const seenCops = new Set();
+    for (const unit of state.police) {
+      if (unit.kind !== 'foot') continue;
+      seenCops.add(unit.id);
+      let mesh = copMeshes.get(unit.id);
+      if (!mesh) {
+        mesh = buildCopMesh();
+        copMeshes.set(unit.id, mesh);
+        scene.add(mesh);
+      }
+      mesh.position.set(unit.x, 0, unit.z);
+      mesh.rotation.y = unit.yaw;
+    }
+    for (const [id, mesh] of copMeshes) {
+      if (!seenCops.has(id)) {
+        scene.remove(mesh);
+        copMeshes.delete(id);
+      }
+    }
+
+    // Camera: a staged override for screenshots, else a smoothed follow cam.
+    if (state.cameraOverride) {
+      const o = state.cameraOverride;
+      camera.position.set(o.x, o.y, o.z);
+      camera.lookAt(o.lookX, o.lookY, o.lookZ);
+    } else {
+      const camYaw = state.camera.yaw;
+      const dist = p.inCar ? CONFIG.camera.carDist : CONFIG.camera.onFootDist;
+      const height = (p.inCar ? CONFIG.camera.carHeight : CONFIG.camera.height) + dist * Math.sin(state.camera.pitch) * 0.5;
+      const tx = p.x + Math.sin(camYaw) * dist;
+      const tz = p.z + Math.cos(camYaw) * dist;
+      if (!snapped) {
+        cameraPos.set(tx, height, tz);
+        snapped = true;
+      } else {
+        const k = 1 - Math.exp(-7 * dt);
+        cameraPos.x += (tx - cameraPos.x) * k;
+        cameraPos.y += (height - cameraPos.y) * k;
+        cameraPos.z += (tz - cameraPos.z) * k;
+      }
+      camera.position.copy(cameraPos);
+      camera.lookAt(p.x, p.y + 1.6, p.z);
+    }
+
+    renderer.render(scene, camera);
   }
 
-  function drawHud(state) {
-    context.textBaseline = 'top';
-    text(scoreLabel(state.score), 24, 20, 28, PALETTE.text, 'left');
-    text(levelLabel(state.level), FIELD.width / 2, 20, 28, PALETTE.text, 'center');
-    const firstLife = FIELD.width - 24 - LIVES * (LIFE_SIZE + LIFE_GAP) + LIFE_GAP;
-    text('Lives', firstLife - 12, 20, 28, PALETTE.text, 'right');
-    for (let life = 0; life < LIVES; life += 1) {
-      context.fillStyle = life < state.lives ? PALETTE.player : PALETTE.ground;
-      context.fillRect(firstLife + life * (LIFE_SIZE + LIFE_GAP), 24, LIFE_SIZE, LIFE_SIZE);
-    }
-  }
-
-  function drawPanel(title, lines, prompt) {
-    const height = PANEL.top + lines.length * PANEL.line + PANEL.bottom;
-    const x = (FIELD.width - PANEL.width) / 2;
-    const y = (FIELD.height - height) / 2;
-    context.fillStyle = PALETTE.panel;
-    context.fillRect(x, y, PANEL.width, height);
-    context.textBaseline = 'alphabetic';
-    text(title, FIELD.width / 2, y + 78, 48, PALETTE.text, 'center');
-    for (let index = 0; index < lines.length; index += 1) {
-      text(lines[index], FIELD.width / 2, y + PANEL.top + index * PANEL.line, 22, PALETTE.muted, 'center');
-    }
-    text(prompt, FIELD.width / 2, y + height - 40, 24, PALETTE.coin, 'center');
-  }
-
-  const TITLE_LINES = ['Dodge the red blocks. Catch the gold coins.', 'Move with ← → or A D.  Pause with P.', ''];
-  const PAUSED_LINES = ['The blocks will wait for you.'];
-  const OVER_LINES = ['', ''];
-
-  /** Paint one frame: the field, then the HUD or a panel for the screen the game is on. */
-  function draw(state, screen, best) {
-    context.setTransform(1, 0, 0, 1, 0, 0);
-    context.fillStyle = PALETTE.backdrop;
-    context.fillRect(0, 0, canvas.width, canvas.height);
-    context.setTransform(view.scale, 0, 0, view.scale, view.x, view.y);
-    drawField(state);
-    if (screen === SCREEN_TITLE) {
-      TITLE_LINES[2] = bestLabel(best);
-      drawPanel('Block Dodger', TITLE_LINES, 'Press Space or click to start');
-      return;
-    }
-    drawHud(state);
-    if (screen === SCREEN_PAUSED) drawPanel('Paused', PAUSED_LINES, 'Press P to resume');
-    else if (screen === SCREEN_OVER) {
-      OVER_LINES[0] = finalLabel(state.score);
-      OVER_LINES[1] = bestLabel(best);
-      drawPanel('Game over', OVER_LINES, 'Press Space or click to play again');
-    }
-  }
-
-  resize();
-  window.addEventListener('resize', resize);
-  return { draw };
+  return { sync, resize, scene, camera };
 }

@@ -3,16 +3,107 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Block Dodger</title>
+<title>Solmar Bay — an open-world crime game</title>
 <style>
-  html, body { margin: 0; height: 100%; overflow: hidden; background: #11141b; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0b0f14; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
   #game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
-  /* Read aloud, never shown: the status line screen readers announce. */
   #status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .hidden { display: none !important; }
+  #hud { display: none; position: fixed; inset: 0; pointer-events: none; color: #fff; text-shadow: 0 1px 3px rgba(0,0,0,.7); }
+  body.playing #hud { display: block; }
+  #hud-top-left { position: absolute; top: 14px; left: 16px; max-width: 420px; }
+  #hud-objective { font-size: 17px; font-weight: 650; background: rgba(10,16,24,.55); padding: 8px 12px; border-radius: 8px; border-left: 4px solid #f2c94c; }
+  #hud-message { margin-top: 8px; font-size: 15px; background: rgba(10,16,24,.55); padding: 6px 10px; border-radius: 8px; transition: opacity .3s; }
+  #hud-top-right { position: absolute; top: 14px; right: 16px; text-align: right; }
+  #hud-stars { font-size: 26px; letter-spacing: 2px; }
+  #hud-wanted-name { font-size: 13px; color: #ffd9d0; }
+  #hud-cash { font-size: 24px; font-weight: 750; color: #7ee2a0; margin-top: 2px; }
+  #hud-bottom-left { position: absolute; left: 16px; bottom: 16px; width: 240px; }
+  #hud-health { height: 14px; background: rgba(10,16,24,.6); border-radius: 7px; overflow: hidden; border: 1px solid rgba(255,255,255,.35); }
+  #hud-health-fill { height: 100%; width: 100%; background: #37b24d; transition: width .2s; }
+  #hud-weapon-line { margin-top: 6px; font-size: 15px; }
+  #hud-bottom-right { position: absolute; right: 16px; bottom: 16px; text-align: right; }
+  #minimap { border: 2px solid rgba(255,255,255,.5); border-radius: 8px; background: rgba(10,16,24,.8); }
+  #hud-speed { font-size: 22px; font-weight: 700; margin-top: 4px; }
+  #hud-dialogue { position: absolute; left: 50%; bottom: 90px; transform: translateX(-50%); max-width: 640px; background: rgba(10,16,24,.72); padding: 12px 18px; border-radius: 10px; transition: opacity .3s; }
+  #hud-dialogue-speaker { color: #f2c94c; font-weight: 700; font-size: 14px; }
+  #hud-dialogue-text { font-size: 16px; margin-top: 2px; }
+  #damage-flash { position: fixed; inset: 0; background: radial-gradient(ellipse at center, transparent 55%, rgba(255,0,0,.55) 100%); opacity: 0; pointer-events: none; }
+  .screen { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(5, 10, 18, .72); color: #fff; z-index: 10; }
+  .panel { text-align: center; max-width: 560px; padding: 32px 40px; background: rgba(10,16,24,.85); border-radius: 16px; border: 1px solid rgba(255,255,255,.15); }
+  .panel h1 { margin: 0 0 4px; font-size: 52px; letter-spacing: 2px; color: #ffd98a; }
+  .panel h2 { margin: 0 0 12px; font-size: 30px; }
+  .panel p { color: #c8d0dc; line-height: 1.5; }
+  .panel .controls { font-size: 14px; text-align: left; display: inline-block; margin: 8px 0 18px; line-height: 1.9; }
+  .panel button { display: block; width: 260px; margin: 10px auto 0; padding: 12px; font-size: 17px; font-weight: 650; border: none; border-radius: 10px; background: #f2c94c; color: #1a1a1a; cursor: pointer; }
+  .panel button.secondary { background: #2f3a4a; color: #fff; }
+  .panel button:hover { filter: brightness(1.1); }
+  .tagline { color: #ffd98a !important; font-style: italic; }
 </style>
+<script type="importmap">
+{ "imports": { "three": "./vendor/three.min.js" } }
+</script>
 </head>
 <body>
-<canvas id="game" aria-label="Block Dodger: move the paddle left and right to dodge falling blocks and catch coins"></canvas>
+<canvas id="game" aria-label="Solmar Bay: an open-world crime game. Walk, drive, take jobs for Mara Kessler."></canvas>
+<div id="damage-flash"></div>
+<div id="hud">
+  <div id="hud-top-left">
+    <div id="hud-objective"></div>
+    <div id="hud-message" style="opacity:0"></div>
+  </div>
+  <div id="hud-top-right">
+    <div id="hud-stars">☆☆☆☆☆</div>
+    <div id="hud-wanted-name">Clean</div>
+    <div id="hud-cash">$250</div>
+  </div>
+  <div id="hud-bottom-left">
+    <div id="hud-health"><div id="hud-health-fill"></div></div>
+    <div id="hud-weapon-line"><span id="hud-weapon">Fists</span> · <span id="hud-ammo">—</span></div>
+  </div>
+  <div id="hud-bottom-right">
+    <canvas id="minimap" width="210" height="210"></canvas>
+    <div id="hud-speed"></div>
+  </div>
+  <div id="hud-dialogue" style="opacity:0">
+    <div id="hud-dialogue-speaker"></div>
+    <div id="hud-dialogue-text"></div>
+  </div>
+</div>
+
+<div id="screen-title" class="screen">
+  <div class="panel">
+    <h1>SOLMAR BAY</h1>
+    <p class="tagline">Sun, sea, and trouble — a driver, a fixer, and a city for the taking.</p>
+    <p>Dario just rolled into Solmar Bay with $250 and a borrowed name. Mara Kessler has work for a driver who asks no questions. Steal cars, run packages, lose the cops — and take the city.</p>
+    <div class="controls">
+      WASD move &nbsp;·&nbsp; Mouse look &nbsp;·&nbsp; Shift sprint &nbsp;·&nbsp; Space jump / handbrake<br>
+      E enter &amp; exit car &nbsp;·&nbsp; F punch &nbsp;·&nbsp; Click shoot &nbsp;·&nbsp; 1 / 2 weapons &nbsp;·&nbsp; R reload<br>
+      P pause &nbsp;·&nbsp; M mute &nbsp;·&nbsp; Progress saves automatically
+    </div>
+    <button id="btn-new">New Game</button>
+    <button id="btn-continue" class="secondary hidden">Continue</button>
+  </div>
+</div>
+
+<div id="screen-pause" class="screen hidden">
+  <div class="panel">
+    <h2>Paused</h2>
+    <p>The city waits. Your progress is saved.</p>
+    <button id="btn-resume">Resume</button>
+    <button id="btn-quit" class="secondary">Quit to Title</button>
+  </div>
+</div>
+
+<div id="screen-over" class="screen hidden">
+  <div class="panel">
+    <h2 id="over-title">BUSTED</h2>
+    <p id="over-text"></p>
+    <button id="btn-restart">Back on the streets</button>
+    <button id="btn-quit-over" class="secondary">Quit to Title</button>
+  </div>
+</div>
+
 <p id="status" role="status" aria-live="polite"></p>
 <script type="module" src="./src/main.js"></script>
 </body>
